@@ -140,8 +140,9 @@ const CourseCard = ({ course, onUpdate }) => {
               href={course.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="py-2 px-4 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+              className="py-2 px-4 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors inline-flex items-center gap-1"
             >
+              <span>🔗</span>
               View Course
             </a>
           )}
