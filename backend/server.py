@@ -530,24 +530,38 @@ async def sync_courses():
 
 @api_router.get("/courses", response_model=List[Course])
 async def get_courses(
-    curriculum: Optional[Curriculum] = None,
+    curriculum: Optional[str] = None,
     category: Optional[str] = None,
-    status: Optional[CourseStatus] = None,
+    status: Optional[str] = None,
     search: Optional[str] = None
 ):
     """Get courses with optional filtering"""
     query = {}
     
-    if curriculum:
-        query["curriculum"] = curriculum
-    if category:
-        query["category"] = category  
-    if status:
-        query["status"] = status
-    if search:
+    # Only add filters if they are not empty strings
+    if curriculum and curriculum.strip():
+        # Validate curriculum enum
+        try:
+            curr_enum = Curriculum(curriculum)
+            query["curriculum"] = curr_enum
+        except ValueError:
+            pass  # Skip invalid curriculum values
+            
+    if category and category.strip():
+        query["category"] = category
+        
+    if status and status.strip():
+        # Validate status enum  
+        try:
+            status_enum = CourseStatus(status)
+            query["status"] = status_enum
+        except ValueError:
+            pass  # Skip invalid status values
+            
+    if search and search.strip():
         query["$or"] = [
-            {"title": {"$regex": search, "$options": "i"}},
-            {"description": {"$regex": search, "$options": "i"}}
+            {"title": {"$regex": search.strip(), "$options": "i"}},
+            {"description": {"$regex": search.strip(), "$options": "i"}}
         ]
     
     courses = await db.courses.find(query).to_list(1000)
