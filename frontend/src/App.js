@@ -363,8 +363,8 @@ function App() {
             />
             <StatsCard
               title="Completed"
-              value={stats.completed_courses}
-              subtitle={`${stats.completion_percentage.toFixed(1)}%`}
+              value={`${stats.completed_courses} (${stats.completion_percentage.toFixed(1)}%)`}
+              subtitle={`of ${stats.total_courses} courses`}
               icon="✅"
               color="green"
             />
