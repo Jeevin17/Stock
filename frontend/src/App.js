@@ -106,14 +106,21 @@ const CourseCard = ({ course, onUpdate }) => {
         <div className="mb-4">
           <div className="flex justify-between text-sm text-gray-600 mb-1">
             <span>Progress</span>
-            <span>{course.progress}%</span>
+            <span className="font-semibold">{course.progress}%</span>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
+          <div className="w-full bg-gray-200 rounded-full h-3">
             <div 
-              className={`h-2 rounded-full transition-all duration-300 ${getProgressColor(course.progress)}`}
+              className={`h-3 rounded-full transition-all duration-300 ${getProgressColor(course.progress)}`}
               style={{ width: `${course.progress}%` }}
             ></div>
           </div>
+          {course.progress > 0 && (
+            <div className="text-xs text-gray-500 mt-1">
+              {course.progress >= 80 ? '🎯 Ready to unlock next courses' : 
+               course.progress >= 50 ? '📈 Good progress' : 
+               course.progress >= 25 ? '🌱 Getting started' : '🚀 Just begun'}
+            </div>
+          )}
         </div>
 
         {/* Course Info */}
