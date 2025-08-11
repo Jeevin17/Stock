@@ -395,127 +395,121 @@ async def fetch_github_content(url: str) -> str:
         response.raise_for_status()
         return response.text
 
-def parse_course_table_row(row: str, curriculum: CurriculumType, category: str) -> Optional[Dict]:
-    """Enhanced parsing of table rows from OSSU markdown to extract course info"""
-    if not row.strip() or not '|' in row:
+def extract_course_from_text(text: str, curriculum: CurriculumType, category: str) -> Optional[Dict]:
+    """Extract course information from various text formats (not just tables)"""
+    text = text.strip()
+    if not text or len(text) < 10:
         return None
 
-    # Split by | and clean up - handle various formats
-    parts = [part.strip() for part in row.split('|')]
-    # Remove empty parts from beginning and end
-    while parts and not parts[0]:
-        parts.pop(0)
-    while parts and not parts[-1]:
-        parts.pop()
-
-    if len(parts) < 2:  # Need at least course name and one other field
-        return None
-
-    course_name_cell = parts[0].strip()
-
-    # Skip header rows, separators, or empty names - more flexible conditions
-    skip_indicators = [
-        'courses', 'course', 'name', 'subject', 'duration', 'effort', 'prerequisite',
-        ':--', '---', '===', 'week', 'hour', 'time', 'estimated'
+    # Skip common non-course lines
+    skip_patterns = [
+        r'^#+\s*',  # Headers
+        r'^[\|\-\:]+$',  # Table separators  
+        r'^\s*$',  # Empty lines
+        r'^course\s*$',  # Just "course"
+        r'^name\s*$',  # Just "name"
+        r'^duration\s*$',  # Just "duration"
+        r'^effort\s*$',  # Just "effort"
+        r'^prerequisite',  # "prerequisite" headers
     ]
     
-    if (not course_name_cell or
-        len(course_name_cell) < 3 or
-        any(indicator in course_name_cell.lower() for indicator in skip_indicators) or
-        course_name_cell.startswith(':') or
-        course_name_cell.startswith('-') or
-        course_name_cell.count('-') > 3):
+    if any(re.match(pattern, text.lower()) for pattern in skip_patterns):
         return None
 
-    # Extract URL from various markdown link formats
-    url_patterns = [
-        r'\[([^\]]+)\]\(([^)]+)\)',  # Standard [text](url)
-        r'\*\*\[([^\]]+)\]\(([^)]+)\)\*\*',  # Bold link
-        r'\*\[([^\]]+)\]\(([^)]+)\)\*',  # Italic link
-    ]
-    
-    clean_name = course_name_cell
+    # Extract course name from various formats
+    course_name = None
     course_url = None
     
-    for pattern in url_patterns:
-        url_match = re.search(pattern, course_name_cell)
-        if url_match:
-            clean_name = url_match.group(1).strip()
-            course_url = url_match.group(2).strip()
+    # Try markdown link formats
+    link_patterns = [
+        r'\[([^\]]+)\]\(([^)]+)\)',  # [Course Name](URL)
+        r'\*\*\[([^\]]+)\]\(([^)]+)\)\*\*',  # **[Course Name](URL)**
+        r'\*\[([^\]]+)\]\(([^)]+)\)\*',  # *[Course Name](URL)*
+        r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>([^<]+)</a>',  # HTML links
+    ]
+    
+    for pattern in link_patterns:
+        match = re.search(pattern, text)
+        if match:
+            if 'href=' in pattern:  # HTML link
+                course_url = match.group(1)
+                course_name = match.group(2).strip()
+            else:  # Markdown link
+                course_name = match.group(1).strip()
+                course_url = match.group(2).strip()
             break
     
-    if not course_url:
-        # Handle other markdown formatting
-        clean_name = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_name)  # Remove bold
-        clean_name = re.sub(r'\*([^*]+)\*', r'\1', clean_name)  # Remove italic
-        clean_name = re.sub(r'`([^`]+)`', r'\1', clean_name)  # Remove code formatting
-        clean_name = clean_name.strip()
+    # If no link found, try to extract course name from plain text
+    if not course_name:
+        # Remove common prefixes and clean up
+        text_clean = re.sub(r'^[\*\-\+\d\.\s]+', '', text)  # Remove bullet points, numbers
+        text_clean = re.sub(r'\*\*([^*]+)\*\*', r'\1', text_clean)  # Remove bold
+        text_clean = re.sub(r'\*([^*]+)\*', r'\1', text_clean)  # Remove italic
+        text_clean = re.sub(r'`([^`]+)`', r'\1', text_clean)  # Remove code formatting
+        
+        # Extract potential course name
+        potential_name = text_clean.strip()
+        if len(potential_name) > 5 and not potential_name.lower() in ['course', 'courses', 'name', 'duration', 'effort']:
+            course_name = potential_name
 
-    # Skip if name is still too short or looks invalid
-    if len(clean_name) < 3 or clean_name.lower() in skip_indicators:
+    if not course_name or len(course_name) < 5:
         return None
 
-    # Extract other fields with more flexibility
+    # Extract duration, effort, prerequisites from surrounding text or table format
     duration = ""
     effort = ""
     prerequisites = "none"
     
-    if len(parts) > 1:
-        duration = parts[1].strip() if len(parts) > 1 else ""
-    if len(parts) > 2:
-        effort = parts[2].strip() if len(parts) > 2 else ""
-    if len(parts) > 3:
-        prerequisites = parts[3].strip() if len(parts) > 3 else "none"
+    # If it looks like a table row, try to extract structured data
+    if '|' in text:
+        parts = [part.strip() for part in text.split('|')]
+        parts = [p for p in parts if p]  # Remove empty parts
+        
+        if len(parts) >= 2:
+            if len(parts) > 1:
+                duration = parts[1] if len(parts) > 1 else ""
+            if len(parts) > 2:
+                effort = parts[2] if len(parts) > 2 else ""
+            if len(parts) > 3:
+                prerequisites = parts[3] if len(parts) > 3 else "none"
     
-    # Clean up prerequisites
-    if not prerequisites or prerequisites.lower() in ['', '-', 'none', 'n/a']:
-        prerequisites = "none"
-
     return {
-        "name": clean_name,
+        "name": course_name,
         "curriculum": curriculum,
         "category": category,
         "description": f"Part of {curriculum.value.replace('-', ' ').title()} curriculum - {category}",
         "duration": duration,
         "effort": effort,
-        "prerequisites": prerequisites,
+        "prerequisites": prerequisites if prerequisites and prerequisites.lower() not in ['', '-', 'none', 'n/a'] else "none",
         "url": course_url,
         "topics": []
     }
 
-def detect_table_start(line: str, next_lines: List[str] = None) -> bool:
-    """Enhanced table detection logic"""
-    line = line.strip().lower()
+def is_likely_course_section(lines: List[str], start_idx: int) -> bool:
+    """Determine if a section likely contains courses"""
+    section_text = ' '.join(lines[start_idx:start_idx+10]).lower()
     
-    # Direct table indicators
-    if ('|' in line and 
-        (line.count('|') >= 3 or 
-         any(word in line for word in ['course', 'duration', 'effort', 'prerequisite', 'week', 'hour', 'subject']))):
-        return True
+    course_indicators = [
+        'course', 'class', 'learn', 'study', 'edx', 'coursera', 'mit', 'university',
+        'week', 'hour', 'duration', 'effort', 'prerequisite', 'introduction',
+        'specialization', 'program', 'curriculum', 'subject'
+    ]
     
-    # Check if next few lines confirm this is a table
-    if next_lines:
-        for next_line in next_lines[:3]:
-            if '|:' in next_line or '|--' in next_line:
-                return True
-            if next_line.count('|') >= 3:
-                return True
-    
-    return False
+    return any(indicator in section_text for indicator in course_indicators)
 
 async def sync_curriculum_courses(curriculum: CurriculumType) -> List[Dict]:
-    """Enhanced sync courses for a specific curriculum from GitHub"""
+    """Advanced parsing to extract ALL courses from GitHub README"""
     courses = []
     
     try:
-        # Get GitHub raw URLs with fallback branches
+        # GitHub URLs with multiple branch fallbacks
         github_urls = {
             CurriculumType.COMPUTER_SCIENCE: [
                 "https://raw.githubusercontent.com/ossu/computer-science/master/README.md",
                 "https://raw.githubusercontent.com/ossu/computer-science/main/README.md"
             ],
             CurriculumType.DATA_SCIENCE: [
-                "https://raw.githubusercontent.com/ossu/data-science/master/README.md",
+                "https://raw.githubusercontent.com/ossu/data-science/master/README.md", 
                 "https://raw.githubusercontent.com/ossu/data-science/main/README.md"
             ],
             CurriculumType.MATHEMATICS: [
@@ -534,745 +528,160 @@ async def sync_curriculum_courses(curriculum: CurriculumType) -> List[Dict]:
 
         if curriculum not in github_urls:
             print(f"No URL configured for {curriculum}")
-            return get_fallback_courses(curriculum)
+            return []
 
-        # Try multiple URLs until one works
+        # Try multiple URLs
         content = None
         for url in github_urls[curriculum]:
             try:
                 content = await fetch_github_content(url)
-                print(f"Successfully fetched content from {url}")
+                print(f"✓ Successfully fetched content from {url}")
                 break
             except Exception as e:
-                print(f"Failed to fetch from {url}: {str(e)}")
+                print(f"✗ Failed to fetch from {url}: {str(e)}")
                 continue
 
         if not content:
-            print(f"Could not fetch content for {curriculum}, using fallback")
-            return get_fallback_courses(curriculum)
+            print(f"❌ Could not fetch any content for {curriculum}")
+            return []
 
         lines = content.split('\n')
-        current_category = ""
-        in_table = False
-        found_courses = 0
-        parsed_lines = 0
+        current_category = "General"
+        courses_found = 0
         
-        print(f"Processing {len(lines)} lines for {curriculum}")
+        print(f"📄 Processing {len(lines)} lines for {curriculum}")
+        print(f"🔍 Starting course extraction...")
 
-        for i, line in enumerate(lines):
-            line = line.strip()
-            parsed_lines += 1
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
             
-            # More flexible category header detection
-            if line.startswith('#') and len(line) > 1:
-                # Extract category name more flexibly
-                potential_category = line.replace('#', '').strip()
-                # Skip very short or generic headers
-                if len(potential_category) > 3 and potential_category.lower() not in ['ossu', 'about', 'faq']:
-                    current_category = potential_category
-                    in_table = False
-                    print(f"Found category: {current_category}")
-                continue
-
-            # Enhanced table detection
-            if not in_table:
-                next_lines = lines[i+1:i+4] if i+1 < len(lines) else []
-                if detect_table_start(line, next_lines):
-                    in_table = True
-                    print(f"Started table in category: {current_category}")
-                    continue
-
-            # Skip table separator lines with more patterns
-            if in_table and any(pattern in line for pattern in ['|:', '|--', '| :', '|-', ':--|']):
-                continue
-
-            # Parse course rows with enhanced logic
-            if in_table and '|' in line and current_category:
-                course_data = parse_course_table_row(line, curriculum, current_category)
+            # Detect section headers (categories)
+            if line.startswith('#') and len(line) > 2:
+                header_text = re.sub(r'^#+\s*', '', line).strip()
+                if len(header_text) > 2 and header_text.lower() not in ['ossu', 'faq', 'about', 'table of contents']:
+                    current_category = header_text
+                    print(f"📂 Found category: {current_category}")
+            
+            # Look for course indicators in multiple ways:
+            
+            # Method 1: Table-based extraction
+            if '|' in line and line.count('|') >= 2:
+                course_data = extract_course_from_text(line, curriculum, current_category)
                 if course_data:
                     courses.append(course_data)
-                    found_courses += 1
-                    print(f"✓ Parsed course {found_courses}: {course_data['name']}")
-                else:
-                    # Debug failed parsing attempts
-                    if line.strip() and not line.startswith('#') and len(line) > 10:
-                        print(f"✗ Could not parse line {i}: {line[:100]}...")
+                    courses_found += 1
+                    print(f"✓ [TABLE] Course {courses_found}: {course_data['name']}")
+            
+            # Method 2: Markdown link extraction (most common in OSSU)
+            elif re.search(r'\[([^\]]+)\]\(([^)]+)\)', line):
+                course_data = extract_course_from_text(line, curriculum, current_category)
+                if course_data:
+                    courses.append(course_data)
+                    courses_found += 1
+                    print(f"✓ [LINK] Course {courses_found}: {course_data['name']}")
+            
+            # Method 3: List item extraction (- or * bullets)
+            elif re.match(r'^\s*[\-\*\+]\s+', line):
+                course_data = extract_course_from_text(line, curriculum, current_category)
+                if course_data:
+                    courses.append(course_data)
+                    courses_found += 1
+                    print(f"✓ [LIST] Course {courses_found}: {course_data['name']}")
+            
+            # Method 4: Numbered list extraction
+            elif re.match(r'^\s*\d+\.\s+', line):
+                course_data = extract_course_from_text(line, curriculum, current_category)
+                if course_data:
+                    courses.append(course_data)
+                    courses_found += 1
+                    print(f"✓ [NUMBERED] Course {courses_found}: {course_data['name']}")
+            
+            # Method 5: Multi-line course extraction (course info spread across lines)
+            elif is_likely_course_section(lines, i):
+                # Look ahead for course patterns in next few lines
+                for j in range(i, min(i + 5, len(lines))):
+                    next_line = lines[j].strip()
+                    if re.search(r'\[([^\]]+)\]\(([^)]+)\)', next_line):
+                        course_data = extract_course_from_text(next_line, curriculum, current_category)
+                        if course_data:
+                            courses.append(course_data)
+                            courses_found += 1
+                            print(f"✓ [MULTI] Course {courses_found}: {course_data['name']}")
+                        break
+            
+            i += 1
 
-            # End table on new header or empty section
-            elif in_table and (line.startswith('#') or (not line.strip() and i < len(lines)-1 and not lines[i+1].strip())):
-                in_table = False
-                print(f"Ended table for category: {current_category}")
-
-        print(f"Successfully parsed {found_courses} courses from {parsed_lines} lines for {curriculum}")
-
-        # Enhanced fallback logic - only use fallback if very few courses found
-        if len(courses) < 5:
-            print(f"Only found {len(courses)} courses for {curriculum}, using enhanced fallback")
-            fallback_courses = get_fallback_courses(curriculum)
-            # Merge parsed courses with fallback, avoiding duplicates
-            existing_names = {course['name'].lower() for course in courses}
-            for fallback_course in fallback_courses:
-                if fallback_course['name'].lower() not in existing_names:
-                    courses.append(fallback_course)
-
-        return courses
+        print(f"🎯 Successfully extracted {courses_found} courses from {curriculum}")
+        
+        # Remove duplicates based on course name
+        unique_courses = []
+        seen_names = set()
+        for course in courses:
+            course_name_lower = course['name'].lower().strip()
+            if course_name_lower not in seen_names:
+                seen_names.add(course_name_lower)
+                unique_courses.append(course)
+            else:
+                print(f"🔄 Skipped duplicate: {course['name']}")
+        
+        print(f"✅ Final count after deduplication: {len(unique_courses)} courses for {curriculum}")
+        return unique_courses
 
     except Exception as e:
-        print(f"Error syncing {curriculum}: {str(e)}")
-        return get_fallback_courses(curriculum)
-
-def get_fallback_courses(curriculum: CurriculumType) -> List[Dict]:
-    """Comprehensive fallback courses when GitHub parsing fails - now includes 60+ courses total"""
-    fallback_courses = {
-        CurriculumType.COMPUTER_SCIENCE: [
-            {
-                "name": "Introduction to Computer Science and Programming using Python",
-                "curriculum": curriculum,
-                "category": "Intro CS",
-                "description": "Learn programming fundamentals with Python",
-                "duration": "14 weeks",
-                "effort": "6-10 hours/week",
-                "prerequisites": "high school algebra",
-                "url": "https://www.edx.org/course/introduction-to-computer-science-and-programming-7",
-                "topics": ["computation", "imperative programming", "basic data structures"]
-            },
-            {
-                "name": "Introduction to Computational Thinking and Data Science",
-                "curriculum": curriculum,
-                "category": "Intro CS",
-                "description": "Learn computational thinking and data science",
-                "duration": "9 weeks",
-                "effort": "6-10 hours/week",
-                "prerequisites": "Introduction to Computer Science using Python",
-                "url": "https://www.edx.org/course/introduction-to-computational-thinking-and-data-4",
-                "topics": ["computational thinking", "data science", "optimization"]
-            },
-            {
-                "name": "Systematic Program Design",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Systematic approach to program design",
-                "duration": "13 weeks",
-                "effort": "8-10 hours/week",
-                "prerequisites": "none",
-                "url": "https://www.edx.org/course/how-to-code-simple-data",
-                "topics": ["functional programming", "design for testing"]
-            },
-            {
-                "name": "How to Code: Complex Data",
-                "curriculum": curriculum,
-                "category": "Core Programming", 
-                "description": "Programming with complex data structures",
-                "duration": "12 weeks",
-                "effort": "8-10 hours/week",
-                "prerequisites": "Systematic Program Design",
-                "url": "https://www.edx.org/course/how-to-code-complex-data",
-                "topics": ["data structures", "recursion", "mutual recursion"]
-            },
-            {
-                "name": "Programming Languages, Part A",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Programming language concepts and paradigms",
-                "duration": "5 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Systematic Program Design",
-                "url": "https://www.coursera.org/learn/programming-languages",
-                "topics": ["ML", "functional programming", "type systems"]
-            },
-            {
-                "name": "Programming Languages, Part B",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Continuation of programming languages",
-                "duration": "3 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Programming Languages, Part A",
-                "url": "https://www.coursera.org/learn/programming-languages-part-b",
-                "topics": ["Racket", "dynamic typing", "OOP"]
-            },
-            {
-                "name": "Programming Languages, Part C",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Object-oriented programming concepts",
-                "duration": "3 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Programming Languages, Part B",
-                "url": "https://www.coursera.org/learn/programming-languages-part-c",
-                "topics": ["Ruby", "OOP", "subtyping"]
-            },
-            {
-                "name": "Object-Oriented Design",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Design patterns and OOP principles",
-                "duration": "6 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "Programming Languages, Part C",
-                "url": "https://www.coursera.org/learn/object-oriented-design",
-                "topics": ["design patterns", "UML", "software architecture"]
-            },
-            {
-                "name": "Design Patterns",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Common software design patterns",
-                "duration": "4 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "Object-Oriented Design",
-                "url": "https://www.coursera.org/learn/design-patterns",
-                "topics": ["singleton", "factory", "observer", "strategy"]
-            },
-            {
-                "name": "Software Architecture",
-                "curriculum": curriculum,
-                "category": "Core Programming",
-                "description": "Large-scale software architecture",
-                "duration": "4 weeks",
-                "effort": "3-5 hours/week",
-                "prerequisites": "Design Patterns",
-                "url": "https://www.coursera.org/learn/software-architecture",
-                "topics": ["architectural patterns", "microservices", "scalability"]
-            },
-            {
-                "name": "Calculus 1A: Differentiation",
-                "curriculum": curriculum,
-                "category": "Core Math",
-                "description": "Single variable calculus fundamentals",
-                "duration": "13 weeks",
-                "effort": "6-10 hours/week",
-                "prerequisites": "high school math",
-                "url": "https://openlearninglibrary.mit.edu/courses/course-v1:MITx+18.01.1x+2T2019/about",
-                "topics": ["derivatives", "limits", "applications"]
-            },
-            {
-                "name": "Calculus 1B: Integration",
-                "curriculum": curriculum,
-                "category": "Core Math",
-                "description": "Integration and its applications",
-                "duration": "13 weeks",
-                "effort": "5-10 hours/week",
-                "prerequisites": "Calculus 1A",
-                "url": "https://openlearninglibrary.mit.edu/courses/course-v1:MITx+18.01.2x+3T2019/about",
-                "topics": ["integration", "techniques", "applications"]
-            },
-            {
-                "name": "Calculus 1C: Coordinate Systems & Infinite Series",
-                "curriculum": curriculum,
-                "category": "Core Math",
-                "description": "Advanced calculus topics",
-                "duration": "6 weeks",
-                "effort": "5-10 hours/week",
-                "prerequisites": "Calculus 1B",
-                "url": "https://openlearninglibrary.mit.edu/courses/course-v1:MITx+18.01.3x+1T2020/about",
-                "topics": ["series", "parametric equations", "polar coordinates"]
-            },
-            {
-                "name": "Mathematics for Computer Science",
-                "curriculum": curriculum,
-                "category": "Core Math",
-                "description": "Discrete mathematics for CS",
-                "duration": "13 weeks",
-                "effort": "5 hours/week",
-                "prerequisites": "Calculus 1C",
-                "url": "https://openlearninglibrary.mit.edu/courses/course-v1:OCW+6.042J+2T2019/about",
-                "topics": ["discrete math", "proofs", "probability"]
-            },
-            {
-                "name": "Build a Modern Computer from First Principles: From Nand to Tetris",
-                "curriculum": curriculum,
-                "category": "Core Systems",
-                "description": "Computer architecture from logic gates up",
-                "duration": "6 weeks",
-                "effort": "7-13 hours/week",
-                "prerequisites": "C-like programming language",
-                "url": "https://www.coursera.org/learn/build-a-computer",
-                "topics": ["computer architecture", "logic gates", "assembly"]
-            },
-            {
-                "name": "Build a Modern Computer from First Principles: Nand to Tetris Part II",
-                "curriculum": curriculum,
-                "category": "Core Systems",
-                "description": "Software hierarchy of a computer system",
-                "duration": "6 weeks",
-                "effort": "12-18 hours/week",
-                "prerequisites": "From Nand to Tetris Part I",
-                "url": "https://www.coursera.org/learn/nand2tetris2",
-                "topics": ["compiler", "operating systems", "programming language"]
-            },
-            {
-                "name": "Operating Systems: Three Easy Pieces",
-                "curriculum": curriculum,
-                "category": "Core Systems",
-                "description": "Operating system fundamentals",
-                "duration": "10-12 weeks",
-                "effort": "6-10 hours/week",
-                "prerequisites": "Algorithms and programming experience",
-                "url": "http://pages.cs.wisc.edu/~remzi/OSTEP/",
-                "topics": ["processes", "memory", "file systems", "concurrency"]
-            },
-            {
-                "name": "Computer Networking: a Top-Down Approach",
-                "curriculum": curriculum,
-                "category": "Core Systems",
-                "description": "Computer networking principles",
-                "duration": "8 weeks",
-                "effort": "4-12 hours/week",
-                "prerequisites": "Basic programming",
-                "url": "http://gaia.cs.umass.edu/kurose_ross/online_lectures.htm",
-                "topics": ["protocols", "TCP/IP", "routing", "network security"]
-            },
-            {
-                "name": "Algorithms Specialization",
-                "curriculum": curriculum,
-                "category": "Core Theory",
-                "description": "Fundamental algorithms and data structures",
-                "duration": "16 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Mathematics for Computer Science",
-                "url": "https://www.coursera.org/specializations/algorithms",
-                "topics": ["algorithms", "data structures", "graph theory"]
-            },
-            {
-                "name": "Divide and Conquer, Sorting and Searching, and Randomized Algorithms",
-                "curriculum": curriculum,
-                "category": "Core Theory",
-                "description": "Basic algorithmic techniques",
-                "duration": "4 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Mathematics for Computer Science",
-                "url": "https://www.coursera.org/learn/algorithms-divide-conquer",
-                "topics": ["divide and conquer", "sorting", "randomized algorithms"]
-            },
-            {
-                "name": "Graph Search, Shortest Paths, and Data Structures",
-                "curriculum": curriculum,
-                "category": "Core Theory",
-                "description": "Graph algorithms and data structures",
-                "duration": "4 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Divide and Conquer algorithms course",
-                "url": "https://www.coursera.org/learn/algorithms-graphs-data-structures",
-                "topics": ["graph search", "shortest paths", "data structures"]
-            },
-            {
-                "name": "Greedy Algorithms, Minimum Spanning Trees, and Dynamic Programming",
-                "curriculum": curriculum,
-                "category": "Core Theory",
-                "description": "Advanced algorithmic paradigms",
-                "duration": "4 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Graph algorithms course",
-                "url": "https://www.coursera.org/learn/algorithms-greedy",
-                "topics": ["greedy algorithms", "MST", "dynamic programming"]
-            },
-            {
-                "name": "Shortest Paths Revisited, NP-Complete Problems and What To Do About Them",
-                "curriculum": curriculum,
-                "category": "Core Theory",
-                "description": "NP-completeness and approximation algorithms",
-                "duration": "4 weeks",
-                "effort": "4-8 hours/week",
-                "prerequisites": "Dynamic programming course",
-                "url": "https://www.coursera.org/learn/algorithms-npcomplete",
-                "topics": ["NP-completeness", "approximation algorithms", "heuristics"]
-            }
-        ],
-        CurriculumType.DATA_SCIENCE: [
-            {
-                "name": "Introduction to Data Science",
-                "curriculum": curriculum,
-                "category": "Introduction to Data Science",
-                "description": "Overview of data science methodology",
-                "duration": "6 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "none",
-                "url": "https://www.coursera.org/learn/what-is-datascience",
-                "topics": ["data science process", "methodology"]
-            },
-            {
-                "name": "Data Science: R Basics",
-                "curriculum": curriculum,
-                "category": "Introduction to Data Science",
-                "description": "R programming fundamentals for data science",
-                "duration": "8 weeks",
-                "effort": "2-3 hours/week",
-                "prerequisites": "none",
-                "url": "https://www.edx.org/course/data-science-r-basics",
-                "topics": ["R programming", "data manipulation", "visualization"]
-            },
-            {
-                "name": "Python for Data Science, AI & Development",
-                "curriculum": curriculum,
-                "category": "Introduction to Computer Science",
-                "description": "Python programming for data science",
-                "duration": "5 weeks",
-                "effort": "3-5 hours/week",
-                "prerequisites": "none",
-                "url": "https://www.coursera.org/learn/python-for-applied-data-science-ai",
-                "topics": ["python", "data manipulation", "pandas"]
-            },
-            {
-                "name": "Python Data Structures",
-                "curriculum": curriculum,
-                "category": "Introduction to Computer Science",
-                "description": "Data structures in Python",
-                "duration": "7 weeks",
-                "effort": "2-4 hours/week",
-                "prerequisites": "Python basics",
-                "url": "https://www.coursera.org/learn/python-data",
-                "topics": ["lists", "dictionaries", "tuples", "sets"]
-            },
-            {
-                "name": "Using Python to Access Web Data",
-                "curriculum": curriculum,
-                "category": "Introduction to Computer Science",
-                "description": "Web scraping and APIs with Python",
-                "duration": "6 weeks",
-                "effort": "2-4 hours/week",
-                "prerequisites": "Python Data Structures",
-                "url": "https://www.coursera.org/learn/python-network-data",
-                "topics": ["web scraping", "APIs", "XML", "JSON"]
-            },
-            {
-                "name": "Using Databases with Python",
-                "curriculum": curriculum,
-                "category": "Databases",
-                "description": "Database operations with Python",
-                "duration": "5 weeks",
-                "effort": "2-3 hours/week",
-                "prerequisites": "Using Python to Access Web Data",
-                "url": "https://www.coursera.org/learn/python-databases",
-                "topics": ["SQL", "database design", "data modeling"]
-            },
-            {
-                "name": "Introduction to Structured Query Language (SQL)",
-                "curriculum": curriculum,
-                "category": "Databases",
-                "description": "SQL fundamentals",
-                "duration": "4 weeks",
-                "effort": "2-3 hours/week",
-                "prerequisites": "basic programming",
-                "url": "https://www.coursera.org/learn/intro-sql",
-                "topics": ["SQL queries", "joins", "aggregation", "subqueries"]
-            },
-            {
-                "name": "Data Structures and Algorithms",
-                "curriculum": curriculum,
-                "category": "Data Structures and Algorithms",
-                "description": "Fundamental algorithms for data science",
-                "duration": "6 weeks",
-                "effort": "6-10 hours/week",
-                "prerequisites": "Python programming",
-                "url": "https://www.coursera.org/learn/algorithms-part1",
-                "topics": ["algorithms", "complexity analysis"]
-            },
-            {
-                "name": "Calculus for Machine Learning and Data Science",
-                "curriculum": curriculum,
-                "category": "Mathematics",
-                "description": "Calculus concepts for ML and data science",
-                "duration": "4 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "high school mathematics",
-                "url": "https://www.coursera.org/learn/machine-learning-calculus",
-                "topics": ["derivatives", "optimization", "gradients"]
-            },
-            {
-                "name": "Linear Algebra for Machine Learning and Data Science",
-                "curriculum": curriculum,
-                "category": "Mathematics",
-                "description": "Linear algebra fundamentals for ML",
-                "duration": "4 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "basic mathematics",
-                "url": "https://www.coursera.org/learn/machine-learning-linear-algebra",
-                "topics": ["vectors", "matrices", "eigenvalues", "transformations"]
-            },
-            {
-                "name": "Probability & Statistics for Machine Learning & Data Science",
-                "curriculum": curriculum,
-                "category": "Statistics & Probability",
-                "description": "Probability and statistics for data science",
-                "duration": "4 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "basic mathematics",
-                "url": "https://www.coursera.org/learn/machine-learning-probability-and-statistics",
-                "topics": ["probability", "distributions", "hypothesis testing"]
-            },
-            {
-                "name": "Introduction to Statistics",
-                "curriculum": curriculum,
-                "category": "Statistics & Probability",
-                "description": "Statistical concepts and methods",
-                "duration": "8 weeks",
-                "effort": "5-7 hours/week",
-                "prerequisites": "basic mathematics",
-                "url": "https://www.edx.org/course/introduction-to-statistics-descriptive-statistics",
-                "topics": ["descriptive statistics", "inference", "regression"]
-            },
-            {
-                "name": "Machine Learning",
-                "curriculum": curriculum,
-                "category": "Machine Learning/Data Mining",
-                "description": "Introduction to machine learning",
-                "duration": "11 weeks",
-                "effort": "9 hours/week",
-                "prerequisites": "Basic coding",
-                "url": "https://www.coursera.org/specializations/machine-learning-introduction",
-                "topics": ["supervised learning", "unsupervised learning"]
-            },
-            {
-                "name": "Deep Learning",
-                "curriculum": curriculum,
-                "category": "Machine Learning/Data Mining",
-                "description": "Neural networks and deep learning",
-                "duration": "16 weeks",
-                "effort": "3-4 hours/week",
-                "prerequisites": "Machine Learning course",
-                "url": "https://www.coursera.org/specializations/deep-learning",
-                "topics": ["neural networks", "CNN", "RNN", "optimization"]
-            }
-        ],
-        CurriculumType.MATHEMATICS: [
-            {
-                "name": "Introduction to Mathematical Thinking",
-                "curriculum": curriculum,
-                "category": "Introduction to Mathematical Thinking",
-                "description": "Mathematical reasoning and proof techniques",
-                "duration": "10 weeks",
-                "effort": "8-10 hours/week",
-                "prerequisites": "high school mathematics",
-                "url": "https://www.coursera.org/learn/mathematical-thinking",
-                "topics": ["mathematical reasoning", "proofs", "logic"]
-            },
-            {
-                "name": "Single Variable Calculus",
-                "curriculum": curriculum,
-                "category": "Calculus",
-                "description": "Comprehensive single variable calculus",
-                "duration": "15 weeks",
-                "effort": "10-12 hours/week",
-                "prerequisites": "Introduction to Mathematical Thinking",
-                "url": "https://ocw.mit.edu/courses/mathematics/18-01sc-single-variable-calculus-fall-2010/",
-                "topics": ["derivatives", "integrals", "applications"]
-            },
-            {
-                "name": "Multivariable Calculus",
-                "curriculum": curriculum,
-                "category": "Calculus",
-                "description": "Calculus of several variables",
-                "duration": "15 weeks",
-                "effort": "12 hours/week",
-                "prerequisites": "Single Variable Calculus",
-                "url": "https://ocw.mit.edu/courses/mathematics/18-02sc-multivariable-calculus-fall-2010/",
-                "topics": ["partial derivatives", "multiple integrals", "vector calculus"]
-            },
-            {
-                "name": "Linear Algebra",
-                "curriculum": curriculum,
-                "category": "Linear Algebra",
-                "description": "Matrix theory and linear transformations",
-                "duration": "14 weeks",
-                "effort": "12 hours/week",
-                "prerequisites": "Single Variable Calculus",
-                "url": "https://ocw.mit.edu/courses/mathematics/18-06sc-linear-algebra-fall-2011/",
-                "topics": ["matrices", "vector spaces", "eigenvalues"]
-            },
-            {
-                "name": "Introduction to Probability and Statistics",
-                "curriculum": curriculum,
-                "category": "Probability and Statistics",
-                "description": "Probability theory and statistical inference",
-                "duration": "16 weeks",
-                "effort": "12 hours/week",
-                "prerequisites": "Single Variable Calculus",
-                "url": "https://projects.iq.harvard.edu/stat110/home",
-                "topics": ["probability", "distributions", "inference"]
-            },
-            {
-                "name": "Differential Equations",
-                "curriculum": curriculum,
-                "category": "Advanced Mathematics",
-                "description": "Ordinary and partial differential equations",
-                "duration": "14 weeks",
-                "effort": "8-10 hours/week",
-                "prerequisites": "Multivariable Calculus and Linear Algebra",
-                "url": "https://ocw.mit.edu/courses/mathematics/18-03sc-differential-equations-fall-2011/",
-                "topics": ["ODEs", "PDEs", "systems", "applications"]
-            }
-        ],
-        CurriculumType.BIOINFORMATICS: [
-            {
-                "name": "Introduction to Biology",
-                "curriculum": curriculum,
-                "category": "Prerequisites",
-                "description": "Fundamentals of molecular biology",
-                "duration": "15 weeks",
-                "effort": "7-14 hours/week",
-                "prerequisites": "high school biology",
-                "url": "https://www.edx.org/course/introduction-to-biology-the-secret-of-life-3",
-                "topics": ["molecular biology", "genetics", "biochemistry"]
-            },
-            {
-                "name": "Introduction to Chemistry",
-                "curriculum": curriculum,
-                "category": "Prerequisites", 
-                "description": "Chemical structures and reactions",
-                "duration": "15 weeks",
-                "effort": "7-9 hours/week",
-                "prerequisites": "high school chemistry",
-                "url": "https://www.edx.org/course/general-chemistry-i-atoms-molecules-and-bonding",
-                "topics": ["atoms", "bonding", "reactions", "thermodynamics"]
-            },
-            {
-                "name": "Bioinformatics: Introduction and Methods",
-                "curriculum": curriculum,
-                "category": "Core Bioinformatics",
-                "description": "Introduction to bioinformatics methods",
-                "duration": "6 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "Introduction to Biology",
-                "url": "https://www.coursera.org/learn/bioinformatics-introduction-and-methods",
-                "topics": ["sequence analysis", "databases", "tools"]
-            },
-            {
-                "name": "Genomic Data Science",
-                "curriculum": curriculum,
-                "category": "Core Bioinformatics",
-                "description": "Analysis of genomic data",
-                "duration": "32 weeks",
-                "effort": "3-5 hours/week",
-                "prerequisites": "Basic programming",
-                "url": "https://www.coursera.org/specializations/genomic-data-science",
-                "topics": ["genomics", "RNA-seq", "ChIP-seq", "statistical analysis"]
-            }
-        ],
-        CurriculumType.PRECOLLEGE_MATH: [
-            {
-                "name": "Basic Arithmetic",
-                "curriculum": curriculum,
-                "category": "Arithmetic",
-                "description": "Fundamental arithmetic operations",
-                "duration": "8 weeks",
-                "effort": "3-5 hours/week",
-                "prerequisites": "none",
-                "url": "https://www.khanacademy.org/math/arithmetic",
-                "topics": ["addition", "subtraction", "multiplication", "division"]
-            },
-            {
-                "name": "Pre-Algebra",
-                "curriculum": curriculum,
-                "category": "Pre-Algebra",
-                "description": "Introduction to algebraic concepts",
-                "duration": "12 weeks",
-                "effort": "4-6 hours/week",
-                "prerequisites": "Basic Arithmetic",
-                "url": "https://www.khanacademy.org/math/pre-algebra",
-                "topics": ["variables", "equations", "inequalities", "graphing"]
-            },
-            {
-                "name": "Algebra I",
-                "curriculum": curriculum,
-                "category": "Algebra Basics",
-                "description": "Linear equations and functions",
-                "duration": "16 weeks",
-                "effort": "5-7 hours/week",
-                "prerequisites": "Pre-Algebra",
-                "url": "https://www.khanacademy.org/math/algebra",
-                "topics": ["linear equations", "functions", "systems", "polynomials"]
-            },
-            {
-                "name": "Geometry",
-                "curriculum": curriculum,
-                "category": "Geometry",
-                "description": "Euclidean geometry",
-                "duration": "16 weeks",
-                "effort": "5-7 hours/week",
-                "prerequisites": "Algebra I",
-                "url": "https://www.khanacademy.org/math/geometry",
-                "topics": ["shapes", "proofs", "area", "volume", "similarity"]
-            },
-            {
-                "name": "Algebra II",
-                "curriculum": curriculum,
-                "category": "Algebra II",
-                "description": "Advanced algebraic concepts",
-                "duration": "16 weeks",
-                "effort": "6-8 hours/week",
-                "prerequisites": "Algebra I and Geometry",
-                "url": "https://www.khanacademy.org/math/algebra2",
-                "topics": ["quadratics", "exponentials", "logarithms", "rational functions"]
-            },
-            {
-                "name": "Trigonometry",
-                "curriculum": curriculum,
-                "category": "Trigonometry",
-                "description": "Trigonometric functions and identities",
-                "duration": "12 weeks",
-                "effort": "6-8 hours/week",
-                "prerequisites": "Algebra II",
-                "url": "https://www.khanacademy.org/math/trigonometry",
-                "topics": ["trig functions", "identities", "equations", "applications"]
-            },
-            {
-                "name": "Precalculus",
-                "curriculum": curriculum,
-                "category": "Precalculus",
-                "description": "Preparation for calculus",
-                "duration": "16 weeks",
-                "effort": "8-10 hours/week",
-                "prerequisites": "Algebra II and Trigonometry",
-                "url": "https://www.khanacademy.org/math/precalculus",
-                "topics": ["functions", "conic sections", "sequences", "limits"]
-            }
-        ]
-    }
-
-    return fallback_courses.get(curriculum, [])
+        print(f"❌ Error syncing {curriculum}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 @api_router.post("/sync-courses")
 async def sync_courses():
-    """Enhanced sync ALL courses from OSSU GitHub repositories"""
+    """Sync ALL courses from OSSU GitHub repositories using advanced parsing"""
     try:
+        print("🚀 Starting course synchronization from OSSU GitHub repositories...")
+        
         # Clear existing courses for fresh sync
         await db.courses.delete_many({})
-        print("Cleared existing courses from database")
+        print("🗑️  Cleared existing courses from database")
 
         all_courses = []
         sync_summary = {}
 
-        # Sync each curriculum with detailed tracking
+        # Sync each curriculum
         for curriculum in CurriculumType:
-            print(f"\n{'='*50}")
-            print(f"Syncing {curriculum.value} courses...")
+            print(f"\n{'='*60}")
+            print(f"🔄 Syncing {curriculum.value} courses...")
             curriculum_courses = await sync_curriculum_courses(curriculum)
             all_courses.extend(curriculum_courses)
             sync_summary[curriculum.value] = len(curriculum_courses)
-            print(f"✓ Found {len(curriculum_courses)} courses for {curriculum.value}")
+            print(f"📊 {curriculum.value}: {len(curriculum_courses)} courses extracted")
 
-        print(f"\n{'='*50}")
-        print(f"SYNC SUMMARY:")
+        print(f"\n{'='*60}")
+        print(f"📈 SYNC SUMMARY:")
         total_courses = 0
         for curriculum_name, count in sync_summary.items():
-            print(f"  {curriculum_name}: {count} courses")
+            print(f"   📚 {curriculum_name}: {count} courses")
             total_courses += count
-        print(f"  TOTAL: {total_courses} courses")
+        print(f"   🎯 TOTAL: {total_courses} courses extracted from GitHub")
 
-        # Insert all courses with batch processing
+        # Insert all courses
         if all_courses:
             courses_to_insert = []
             for course_data in all_courses:
-                course = Course(**course_data)
-                courses_to_insert.append(course.dict())
+                try:
+                    course = Course(**course_data)
+                    courses_to_insert.append(course.dict())
+                except Exception as e:
+                    print(f"⚠️  Skipped invalid course: {course_data.get('name', 'Unknown')} - {str(e)}")
 
-            # Insert in batches to handle large datasets
+            # Insert in batches
             batch_size = 100
+            inserted_count = 0
             for i in range(0, len(courses_to_insert), batch_size):
                 batch = courses_to_insert[i:i + batch_size]
                 await db.courses.insert_many(batch)
-                print(f"Inserted batch {i//batch_size + 1}: {len(batch)} courses")
+                inserted_count += len(batch)
+                print(f"💾 Inserted batch {i//batch_size + 1}: {len(batch)} courses")
 
         # Update curriculum stats
         for curriculum_type in CurriculumType:
@@ -1288,18 +697,25 @@ async def sync_courses():
 
         # Final verification
         final_count = await db.courses.count_documents({})
-        print(f"\n✅ Successfully synced {final_count} total courses from all OSSU curricula")
+        print(f"\n🎉 SYNC COMPLETED!")
+        print(f"✅ {final_count} total courses successfully synced from OSSU GitHub repositories")
+        
+        if final_count < 20:
+            print(f"⚠️  Warning: Only {final_count} courses found. This seems low - there might be parsing issues.")
         
         return {
-            "message": f"Successfully synced {final_count} courses from all OSSU curricula",
+            "message": f"Successfully synced {final_count} courses from OSSU GitHub repositories",
             "total_courses": final_count,
             "per_curriculum": sync_summary,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow(),
+            "source": "GitHub repositories (live parsing)"
         }
 
     except Exception as e:
         error_msg = f"Failed to sync courses: {str(e)}"
         print(f"❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=error_msg)
 
 async def initialize_curricula():
